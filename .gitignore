@@ -17,3 +17,6 @@ bin/
 gen/
 out/
 .navigation/
+
+# The GitHub MCP text uploader cannot store binary files; gradlew reconstructs this file from the checked-in base64 asset.
+gradle/wrapper/gradle-wrapper.jar

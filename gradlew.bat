@@ -35,6 +35,27 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+rem Restore the official wrapper JAR from its text source if absent.
+if not exist "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" (
+    if not exist "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar.base64" (
+        echo ERROR: Gradle wrapper JAR and its base64 source are missing. 1>&2
+        exit /b 1
+    )
+    certutil -f -decode "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar.base64" "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" >nul
+    if errorlevel 1 (
+        echo ERROR: Could not decode the Gradle wrapper JAR. 1>&2
+        exit /b 1
+    )
+)
+
+rem Verify the decoded wrapper JAR before executing it.
+for /f %%H in ('powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath ''%APP_HOME%\gradle\wrapper\gradle-wrapper.jar'').Hash.ToLowerInvariant()"') do set "ACTUAL_WRAPPER_SHA256=%%H"
+if /I not "%ACTUAL_WRAPPER_SHA256%"=="2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046" (
+    del "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" >nul 2>&1
+    echo ERROR: Gradle wrapper JAR checksum mismatch; refusing to execute it. 1>&2
+    exit /b 1
+)
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS=-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"
 

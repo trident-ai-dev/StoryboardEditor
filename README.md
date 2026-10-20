@@ -20,10 +20,10 @@ An Android prototype for turning timestamped image selections into an MP4 image 
 
 ## Build and test
 
-Requires a JDK 17 installation and Android SDK components for compile SDK 35. The Gradle Wrapper is checked in so a separate global Gradle install is not required.
+Requires a JDK 17 installation and Android SDK components for compile SDK 35. The official Gradle wrapper JAR is stored as a base64 text asset because the GitHub MCP text-file uploader cannot store binary blobs. The launcher reconstructs it only when missing and verifies its SHA-256 before use, so a separate global Gradle install is not required. Run the launcher through Bash if the checkout does not preserve executable file permissions.
 
 ```bash
-./gradlew --no-daemon assembleDebug testDebugUnitTest
+bash gradlew --no-daemon assembleDebug testDebugUnitTest
 ```
 
 GitHub Actions runs the same command on pushes and pull requests and uploads the debug APK as a workflow artifact.

@@ -86,8 +86,40 @@ done
 # shellcheck disable=SC2034
 APP_BASE_NAME=${0##*/}
 # Discard cd standard output in case $CDPATH is set (https://github.com/gradle/gradle/issues/25036)
-APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s
-' "$PWD" ) || exit
+APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s\n' "$PWD" ) || exit
+
+# Restore the official Gradle wrapper JAR from its checked-in base64 source if absent.
+WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+WRAPPER_JAR_B64="$WRAPPER_JAR.base64"
+if [ ! -f "$WRAPPER_JAR" ] && [ -f "$WRAPPER_JAR_B64" ]; then
+    WRAPPER_JAR_TMP="$WRAPPER_JAR.tmp.$$"
+    if ! base64 --decode "$WRAPPER_JAR_B64" > "$WRAPPER_JAR_TMP" 2>/dev/null; then
+        if ! base64 -d "$WRAPPER_JAR_B64" > "$WRAPPER_JAR_TMP" 2>/dev/null; then
+            if ! base64 -D "$WRAPPER_JAR_B64" > "$WRAPPER_JAR_TMP" 2>/dev/null; then
+                rm -f "$WRAPPER_JAR_TMP"
+                echo "ERROR: Could not decode the Gradle wrapper JAR." >&2
+                exit 1
+            fi
+        fi
+    fi
+    EXPECTED_WRAPPER_SHA256="2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046"
+    if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL_WRAPPER_SHA256=$(sha256sum "$WRAPPER_JAR_TMP" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL_WRAPPER_SHA256=$(shasum -a 256 "$WRAPPER_JAR_TMP" | awk '{print $1}')
+    else
+        rm -f "$WRAPPER_JAR_TMP"
+        echo "ERROR: sha256sum or shasum is required to verify the Gradle wrapper JAR." >&2
+        exit 1
+    fi
+    if [ "$ACTUAL_WRAPPER_SHA256" != "$EXPECTED_WRAPPER_SHA256" ]; then
+        rm -f "$WRAPPER_JAR_TMP"
+        echo "ERROR: Gradle wrapper JAR checksum mismatch; refusing to execute it." >&2
+        exit 1
+    fi
+    mv "$WRAPPER_JAR_TMP" "$WRAPPER_JAR"
+fi
+
 
 # Use the maximum available, or set MAX_FD != -1 to use that value.
 MAX_FD=maximum
