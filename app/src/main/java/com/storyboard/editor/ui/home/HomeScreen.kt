@@ -36,6 +36,7 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val voiceover = uiState.voiceover
     val context = LocalContext.current
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -210,7 +211,7 @@ fun HomeScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        if (uiState.voiceover == null) {
+                        if (voiceover == null) {
                             TextButton(onClick = {
                                 audioPickerLauncher.launch("audio/*")
                             }) {
@@ -233,13 +234,13 @@ fun HomeScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        uiState.voiceover.fileName,
+                                        voiceover.fileName,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                     Text(
-                                        "${uiState.voiceover.durationMs / 1000}s",
+                                        "${voiceover.durationMs / 1000}s",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 }
@@ -307,8 +308,7 @@ fun HomeScreen(
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Button(onClick = {
-                                    viewModel.forceBuildTimeline()
-                                    onNavigateToTimeline()
+                                    if (viewModel.forceBuildTimeline() != null) onNavigateToTimeline()
                                 }) {
                                     Text("Force Build")
                                 }

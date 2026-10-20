@@ -2,6 +2,7 @@ package com.storyboard.editor.ui.export
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -16,11 +17,16 @@ import com.storyboard.editor.media.renderer.RenderState
 import com.storyboard.editor.media.renderer.VideoRenderer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,6 +38,7 @@ data class ExportUiState(
     val selectedFrameRate: FrameRate = FrameRate.FPS_30,
     val renderProgress: RenderProgress = RenderProgress(),
     val gallerySaved: Boolean = false,
+    val isSavingToGallery: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -64,11 +71,18 @@ class ExportViewModel @Inject constructor(
 
     fun startExport() {
         val state = _uiState.value
+        if (state.project.videoClips.isEmpty()) {
+            _uiState.value = state.copy(errorMessage = "Add at least one image clip before exporting.")
+            return
+        }
+
         val outputDir = File(context.cacheDir, "exports")
-        outputDir.mkdirs()
+        if ((!outputDir.isDirectory && !outputDir.mkdirs()) || !outputDir.canWrite()) {
+            _uiState.value = state.copy(errorMessage = "Cannot create a writable export directory.")
+            return
+        }
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val outputFile = File(outputDir, "storyboard_$timestamp.mp4")
-
         val projectWithSettings = state.project.copy(
             exportSettings = state.project.exportSettings.copy(
                 resolution = state.selectedResolution,
@@ -76,53 +90,104 @@ class ExportViewModel @Inject constructor(
             )
         )
 
-        viewModelScope.launch {
-            val result = videoRenderer.render(
-                project = projectWithSettings,
-                outputFile = outputFile
+        _uiState.value = state.copy(
+            gallerySaved = false,
+            isSavingToGallery = false,
+            errorMessage = null,
+            renderProgress = RenderProgress(
+                state = RenderState.PREPARING,
+                totalClips = projectWithSettings.videoClips.size,
+                message = "Preparing render..."
             )
-
-            _uiState.value = _uiState.value.copy(renderProgress = result)
-
-            if (result.state == RenderState.COMPLETED) {
-                saveToGallery(outputFile)
+        )
+        viewModelScope.launch {
+            // Reflect live progress in the screen instead of waiting for render() to return.
+            val progressJob = launch {
+                videoRenderer.progress.collect { progress ->
+                    _uiState.value = _uiState.value.copy(renderProgress = progress)
+                }
             }
+            val result = try {
+                videoRenderer.render(project = projectWithSettings, outputFile = outputFile)
+            } finally {
+                progressJob.cancelAndJoin()
+            }
+            _uiState.value = _uiState.value.copy(
+                renderProgress = result,
+                gallerySaved = false,
+                isSavingToGallery = result.state == RenderState.COMPLETED
+            )
+            if (result.state == RenderState.COMPLETED) saveToGallery(outputFile)
         }
     }
 
-    private fun saveToGallery(file: File) {
-        try {
-            val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
-                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Storyboard")
-                put(MediaStore.Video.Media.IS_PENDING, 1)
-            }
-
-            val resolver = context.contentResolver
-            val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-
-            if (uri != null) {
-                resolver.openOutputStream(uri)?.use { outputStream ->
-                    file.inputStream().use { inputStream ->
-                        inputStream.copyTo(outputStream)
+    private suspend fun saveToGallery(file: File) {
+        // Large videos can be hundreds of megabytes; don't copy them on the UI thread.
+        val saveError = withContext(Dispatchers.IO) {
+            var insertedUri: Uri? = null
+            try {
+                if (!file.isFile || file.length() <= 0L) {
+                    throw IOException("The export file is missing or empty.")
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Storyboard")
+                        put(MediaStore.Video.Media.IS_PENDING, 1)
                     }
                 }
-                values.clear()
-                values.put(MediaStore.Video.Media.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
 
-                _uiState.value = _uiState.value.copy(gallerySaved = true)
+                val resolver = context.contentResolver
+                val destination = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IOException("Android did not create a Gallery destination.")
+                insertedUri = destination
+                val outputStream = resolver.openOutputStream(destination, "w")
+                    ?: throw IOException("Could not open the Gallery destination for writing.")
+                val copied = outputStream.use { output ->
+                    file.inputStream().use { source -> source.copyTo(output) }
+                }
+                if (copied != file.length()) {
+                    throw IOException("The saved video size does not match the export size.")
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val publishValues = ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                    }
+                    if (resolver.update(destination, publishValues, null, null) <= 0) {
+                        throw IOException("Could not publish the saved video to the Gallery.")
+                    }
+                }
+                null
+            } catch (e: Exception) {
+                insertedUri?.let { uri ->
+                    runCatching { context.contentResolver.delete(uri, null, null) }
+                }
+                "Failed to save export to Gallery: ${e.message ?: e.javaClass.simpleName}"
             }
-        } catch (e: Exception) {
-            _uiState.value = _uiState.value.copy(
-                errorMessage = "Failed to save to gallery: ${e.message}"
-            )
         }
+
+        _uiState.value = _uiState.value.copy(
+            gallerySaved = saveError == null,
+            isSavingToGallery = false,
+            errorMessage = saveError
+        )
+    }
+
+    fun retrySaveToGallery() {
+        val outputFile = _uiState.value.renderProgress.outputFile ?: return
+        if (_uiState.value.isSavingToGallery) return
+        _uiState.value = _uiState.value.copy(isSavingToGallery = true, errorMessage = null)
+        viewModelScope.launch { saveToGallery(outputFile) }
     }
 
     fun cancelExport() {
         videoRenderer.cancel()
+    }
+
+    fun showError(message: String) {
+        _uiState.value = _uiState.value.copy(errorMessage = message)
     }
 
     fun clearError() {

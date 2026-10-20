@@ -1,5 +1,11 @@
 package com.storyboard.editor.ui.export
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,18 +38,25 @@ fun ExportScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.startExport()
+        } else {
+            viewModel.showError("Storage permission is required to save exports on Android 9 and older.")
+        }
+    }
 
-    LaunchedEffect(uiState.renderProgress.state) {
-        when (uiState.renderProgress.state) {
-            RenderState.COMPLETED -> {
+    LaunchedEffect(uiState.renderProgress.state, uiState.gallerySaved) {
+        when {
+            uiState.renderProgress.state == RenderState.COMPLETED && uiState.gallerySaved ->
                 snackbarHostState.showSnackbar("Video saved to Gallery!")
-            }
-            RenderState.FAILED -> {
+            uiState.renderProgress.state == RenderState.FAILED ->
                 snackbarHostState.showSnackbar(
                     "Export failed: ${uiState.renderProgress.error ?: "Unknown error"}"
                 )
-            }
-            else -> {}
         }
     }
 
@@ -137,7 +151,18 @@ fun ExportScreen(
 
             // Export button
             Button(
-                onClick = { viewModel.startExport() },
+                onClick = {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        legacyStoragePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    } else {
+                        viewModel.startExport()
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
@@ -218,11 +243,23 @@ fun ExportScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         if (uiState.renderProgress.state == RenderState.COMPLETED) {
-                            Button(
-                                onClick = onNavigateHome,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Back to Home")
+                            when {
+                                uiState.gallerySaved -> Button(
+                                    onClick = onNavigateHome,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Back to Home")
+                                }
+                                uiState.isSavingToGallery -> {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    Text("Saving the rendered video to Gallery…")
+                                }
+                                else -> Button(
+                                    onClick = { viewModel.retrySaveToGallery() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Retry Gallery Save")
+                                }
                             }
                         }
                     }

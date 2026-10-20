@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "com.storyboard.editor"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.storyboard.editor"
@@ -66,9 +67,7 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
-    implementation(libs.media3.exoplayer)
-    implementation(libs.media3.ui)
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)
-    implementation(libs.media3.muxer)
+    testImplementation("junit:junit:4.13.2")
 }

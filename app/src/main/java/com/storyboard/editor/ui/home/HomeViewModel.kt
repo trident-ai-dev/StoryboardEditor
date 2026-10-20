@@ -13,10 +13,13 @@ import com.storyboard.editor.domain.model.TimelineProject
 import com.storyboard.editor.domain.model.VideoClip
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class HomeUiState(
@@ -47,19 +50,29 @@ class HomeViewModel @Inject constructor(
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     fun importImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
-            val newImages = uris.mapIndexed { index, uri ->
-                ImportedImage(
-                    uri = uri,
-                    fileName = getFileName(uri),
-                    index = _uiState.value.importedImages.size + index
+            try {
+                val resolvedImages = withContext(Dispatchers.IO) {
+                    uris.map { uri -> ImportedImage(uri = uri, fileName = getFileName(uri), index = 0) }
+                }
+                val current = _uiState.value
+                val newImages = resolvedImages.mapIndexed { index, image ->
+                    image.copy(index = current.importedImages.size + index)
+                }
+                _uiState.value = current.copy(
+                    importedImages = current.importedImages + newImages,
+                    autoBuilt = false,
+                    mismatchMessage = null,
+                    errorMessage = null
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "Could not read the selected images: ${error.message ?: "unknown error"}"
                 )
             }
-            _uiState.value = _uiState.value.copy(
-                importedImages = _uiState.value.importedImages + newImages,
-                autoBuilt = false,
-                mismatchMessage = null
-            )
         }
     }
 
@@ -87,44 +100,40 @@ class HomeViewModel @Inject constructor(
     }
 
     fun replaceImage(index: Int, newUri: Uri) {
-        val images = _uiState.value.importedImages.toMutableList()
-        if (index in images.indices) {
-            images[index] = images[index].copy(
-                uri = newUri,
-                fileName = getFileName(newUri)
-            )
-            _uiState.value = _uiState.value.copy(
-                importedImages = images,
-                autoBuilt = false
-            )
+        viewModelScope.launch {
+            val fileName = withContext(Dispatchers.IO) { getFileName(newUri) }
+            val images = _uiState.value.importedImages.toMutableList()
+            if (index in images.indices) {
+                images[index] = images[index].copy(uri = newUri, fileName = fileName)
+                _uiState.value = _uiState.value.copy(importedImages = images, autoBuilt = false)
+            }
         }
     }
 
     fun importVoiceover(uri: Uri) {
         viewModelScope.launch {
-            val fileName = getFileName(uri)
-            val metadataRetriever = android.media.MediaMetadataRetriever()
             try {
-                metadataRetriever.setDataSource(context, uri)
-                val durationStr = metadataRetriever.extractMetadata(
-                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
-                )
-                val durationMs = durationStr?.toLongOrNull() ?: 0L
-
+                val track = withContext(Dispatchers.IO) {
+                    val fileName = getFileName(uri)
+                    val metadataRetriever = android.media.MediaMetadataRetriever()
+                    try {
+                        metadataRetriever.setDataSource(context, uri)
+                        val durationStr = metadataRetriever.extractMetadata(
+                            android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+                        )
+                        val durationMs = durationStr?.toLongOrNull() ?: 0L
+                        AudioTrack(uri = uri, fileName = fileName, durationMs = durationMs)
+                    } finally {
+                        metadataRetriever.release()
+                    }
+                }
+                _uiState.value = _uiState.value.copy(voiceover = track, autoBuilt = false, errorMessage = null)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
-                    voiceover = AudioTrack(
-                        uri = uri,
-                        fileName = fileName,
-                        durationMs = durationMs
-                    ),
-                    autoBuilt = false
+                    errorMessage = "Failed to read audio file: ${error.message ?: "unknown error"}"
                 )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    errorMessage = "Failed to read audio file: ${e.message}"
-                )
-            } finally {
-                metadataRetriever.release()
             }
         }
     }
@@ -136,8 +145,10 @@ class HomeViewModel @Inject constructor(
     fun updateTimestampInput(input: String) {
         _uiState.value = _uiState.value.copy(
             timestampInput = input,
+            parseResult = null,
             autoBuilt = false,
-            mismatchMessage = null
+            mismatchMessage = null,
+            errorMessage = null
         )
     }
 
@@ -154,6 +165,7 @@ class HomeViewModel @Inject constructor(
 
         if (timestamps.errors.isNotEmpty()) {
             _uiState.value = state.copy(
+                parseResult = timestamps,
                 errorMessage = "Fix timestamp errors before building timeline"
             )
             return null
@@ -161,6 +173,7 @@ class HomeViewModel @Inject constructor(
 
         if (images.isEmpty()) {
             _uiState.value = state.copy(
+                parseResult = timestamps,
                 errorMessage = "Import at least one image first"
             )
             return null
@@ -168,6 +181,7 @@ class HomeViewModel @Inject constructor(
 
         if (timestamps.timestamps.isEmpty()) {
             _uiState.value = state.copy(
+                parseResult = timestamps,
                 errorMessage = "Enter at least one timestamp"
             )
             return null
@@ -175,6 +189,7 @@ class HomeViewModel @Inject constructor(
 
         if (images.size > timestamps.timestamps.size) {
             _uiState.value = state.copy(
+                parseResult = timestamps,
                 mismatchMessage = "More images (${images.size}) than timestamps (${timestamps.timestamps.size}). " +
                         "Extra images will be ignored. Add more timestamps or remove images.",
                 autoBuilt = false
@@ -184,6 +199,7 @@ class HomeViewModel @Inject constructor(
 
         if (timestamps.timestamps.size > images.size) {
             _uiState.value = state.copy(
+                parseResult = timestamps,
                 mismatchMessage = "More timestamps (${timestamps.timestamps.size}) than images (${images.size}). " +
                         "Extra timestamps will be ignored. Add more images or remove timestamps.",
                 autoBuilt = false
@@ -209,6 +225,7 @@ class HomeViewModel @Inject constructor(
         repository.updateProject(project)
 
         _uiState.value = state.copy(
+            parseResult = timestamps,
             autoBuilt = true,
             mismatchMessage = null,
             errorMessage = null
@@ -225,18 +242,36 @@ class HomeViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(mismatchMessage = null)
     }
 
-    fun forceBuildTimeline(): TimelineProject {
+    fun forceBuildTimeline(): TimelineProject? {
         val state = _uiState.value
-        parseTimestamps()
-        val timestamps = _uiState.value.parseResult
+        val timestamps = timestampParser.parse(state.timestampInput)
         val images = state.importedImages
-        val voiceover = state.voiceover
 
-        val pairedCount = minOf(images.size, timestamps?.timestamps?.size ?: 0)
-        val usedImages = images.take(pairedCount)
-        val usedTimestamps = timestamps?.timestamps?.take(pairedCount) ?: emptyList()
+        if (timestamps.errors.isNotEmpty()) {
+            _uiState.value = state.copy(
+                parseResult = timestamps,
+                errorMessage = "Fix timestamp errors before building timeline"
+            )
+            return null
+        }
+        if (images.isEmpty()) {
+            _uiState.value = state.copy(
+                parseResult = timestamps,
+                errorMessage = "Import at least one image first"
+            )
+            return null
+        }
+        if (timestamps.timestamps.isEmpty()) {
+            _uiState.value = state.copy(
+                parseResult = timestamps,
+                errorMessage = "Enter at least one valid timestamp"
+            )
+            return null
+        }
 
-        val clips = usedImages.zip(usedTimestamps) { image, timestamp ->
+        val pairedCount = minOf(images.size, timestamps.timestamps.size)
+        if (pairedCount == 0) return null
+        val clips = images.take(pairedCount).zip(timestamps.timestamps.take(pairedCount)) { image, timestamp ->
             VideoClip(
                 imageUri = image.uri,
                 imageFileName = image.fileName,
@@ -244,33 +279,34 @@ class HomeViewModel @Inject constructor(
                 durationMs = timestamp.durationMs
             )
         }
-
         val project = TimelineProject(
             name = state.projectName,
             videoClips = clips,
-            audioTrack = voiceover
+            audioTrack = state.voiceover
         )
-
         repository.updateProject(project)
-
         _uiState.value = state.copy(
+            parseResult = timestamps,
             autoBuilt = true,
             mismatchMessage = null,
             errorMessage = null
         )
-
         return project
     }
 
     private fun getFileName(uri: Uri): String {
-        var name = "unknown"
-        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (nameIndex >= 0 && cursor.moveToFirst()) {
-                name = cursor.getString(nameIndex)
+        return try {
+            var name = "unknown"
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0 && cursor.moveToFirst()) {
+                    name = cursor.getString(nameIndex) ?: "unknown"
+                }
             }
+            name.ifBlank { "unknown" }
+        } catch (_: Exception) {
+            "unknown"
         }
-        return name
     }
 
     private fun List<ImportedImage>.reIndex(): List<ImportedImage> {

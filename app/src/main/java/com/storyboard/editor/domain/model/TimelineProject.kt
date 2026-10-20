@@ -1,8 +1,8 @@
 package com.storyboard.editor.domain.model
 
-import android.net.Uri
 import java.util.UUID
 
+/** A still-image project. Its duration stays in sync with the current clip list. */
 data class TimelineProject(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Untitled Project",
@@ -10,42 +10,16 @@ data class TimelineProject(
     val audioTrack: AudioTrack? = null,
     val transitions: List<ClipTransition> = emptyList(),
     val exportSettings: ExportSettings = ExportSettings(),
-    val durationMs: Long = videoClips.sumOf { it.durationMs },
     val createdAt: Long = System.currentTimeMillis()
-)
-
-data class VideoClip(
-    val id: String = UUID.randomUUID().toString(),
-    val imageUri: Uri,
-    val imageFileName: String,
-    val startTimeMs: Long,
-    val durationMs: Long,
-    val speed: Float = 1f,
-    val position: ClipPosition = ClipPosition(),
-    val opacity: Float = 1f,
-    val transition: ClipTransition? = null
 ) {
-    val effectiveDurationMs: Long get() = (durationMs / speed).toLong()
+    /** Duration of the rendered image sequence, including each clip's playback speed. */
+    val durationMs: Long
+        get() = videoClips.sumOf { it.effectiveDurationMs.coerceAtLeast(0L) }
 }
-
-data class ClipPosition(
-    val rotation: Float = 0f,
-    val scale: Float = 1f,
-    val cropRect: CropRect? = null,
-    val offsetX: Float = 0f,
-    val offsetY: Float = 0f
-)
-
-data class CropRect(
-    val left: Float = 0f,
-    val top: Float = 0f,
-    val right: Float = 1f,
-    val bottom: Float = 1f
-)
 
 data class AudioTrack(
     val id: String = UUID.randomUUID().toString(),
-    val uri: Uri,
+    val uri: android.net.Uri,
     val fileName: String,
     val durationMs: Long,
     val startOffsetMs: Long = 0L,

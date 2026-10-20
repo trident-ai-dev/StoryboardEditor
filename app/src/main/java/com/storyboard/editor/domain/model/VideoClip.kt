@@ -14,7 +14,12 @@ data class VideoClip(
     val opacity: Float = 1f,
     val transition: ClipTransition? = null
 ) {
-    val effectiveDurationMs: Long get() = (durationMs / speed).toLong()
+    /** Effective display duration, protected against corrupt or uninitialized speed values. */
+    val effectiveDurationMs: Long
+        get() {
+            val safeSpeed = speed.takeIf { it.isFinite() && it > 0f } ?: 1f
+            return (durationMs.toDouble() / safeSpeed).toLong().coerceAtLeast(0L)
+        }
 }
 
 data class ClipPosition(
